@@ -182,11 +182,6 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 	if pvc.Spec.Selector != nil {
 		return nil, fmt.Errorf("claim.Spec.Selector is not supported")
 	}
-	for _, accessMode := range pvc.Spec.AccessModes {
-		if accessMode != v1.ReadWriteOnce {
-			return nil, fmt.Errorf("Only support ReadWriteOnce access mode")
-		}
-	}
 	node := opts.SelectedNode
 	if opts.SelectedNode == nil {
 		return nil, fmt.Errorf("configuration error, no node was specified")
@@ -219,6 +214,9 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 	return &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
+			Labels: map[string]string {
+				KeyNode: node.Name,
+			},
 		},
 		Spec: v1.PersistentVolumeSpec{
 			PersistentVolumeReclaimPolicy: *opts.StorageClass.ReclaimPolicy,
@@ -231,23 +229,6 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 				HostPath: &v1.HostPathVolumeSource{
 					Path: path,
 					Type: &hostPathType,
-				},
-			},
-			NodeAffinity: &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      KeyNode,
-									Operator: v1.NodeSelectorOpIn,
-									Values: []string{
-										node.Name,
-									},
-								},
-							},
-						},
-					},
 				},
 			},
 		},
@@ -288,34 +269,12 @@ func (p *LocalPathProvisioner) getPathAndNodeForPV(pv *v1.PersistentVolume) (pat
 	}
 	path = hostPath.Path
 
-	nodeAffinity := pv.Spec.NodeAffinity
-	if nodeAffinity == nil {
-		return "", "", fmt.Errorf("no NodeAffinity set")
+	nodeName, exists := pv.ObjectMeta.Labels[KeyNode];
+	if exists {
+		node = nodeName
+		return path, node, nil
 	}
-	required := nodeAffinity.Required
-	if required == nil {
-		return "", "", fmt.Errorf("no NodeAffinity.Required set")
-	}
-
-	node = ""
-	for _, selectorTerm := range required.NodeSelectorTerms {
-		for _, expression := range selectorTerm.MatchExpressions {
-			if expression.Key == KeyNode && expression.Operator == v1.NodeSelectorOpIn {
-				if len(expression.Values) != 1 {
-					return "", "", fmt.Errorf("multiple values for the node affinity")
-				}
-				node = expression.Values[0]
-				break
-			}
-		}
-		if node != "" {
-			break
-		}
-	}
-	if node == "" {
-		return "", "", fmt.Errorf("cannot find affinited node")
-	}
-	return path, node, nil
+	return "", "", fmt.Errorf("cannot find node name label associated with this PV")
 }
 
 func (p *LocalPathProvisioner) createHelperPod(action ActionType, cmdsForPath []string, name, path, node, volumeMode string, sizeInBytes int64) (err error) {
